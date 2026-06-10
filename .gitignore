@@ -1,6 +1,6 @@
 build
 nested_cages
-nested_cages.*
-*.txt
+nested_cages.exe
+nested_cages.log
 *.ini
 *.bin

@@ -1,0 +1,15 @@
+numpy
+scipy
+sphinx<9.0.0
+sphinx-sitemap
+sphinx-immaterial
+autoclasstoc
+# sphinx-autodoc-toolbox
+breathe
+nbsphinx
+pandoc
+myst_parser
+sphinxcontrib-bibtex
+sphinxemoji
+sphinx-last-updated-by-git
+sphinx-autobuild

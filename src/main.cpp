@@ -9,7 +9,7 @@
 
 using namespace easy3d;
 
-// Helper to convert Easy3D mesh to Eigen
+// dump easy3d mesh into eigen matrices.
 NestedCages::Mesh to_eigen(easy3d::SurfaceMesh *emesh)
 {
 	NestedCages::Mesh mesh;
@@ -42,7 +42,7 @@ NestedCages::Mesh to_eigen(easy3d::SurfaceMesh *emesh)
 	return mesh;
 }
 
-// Helper to convert Eigen to Easy3D mesh
+// convert back to easy3d so the viewer doesn't complain
 easy3d::SurfaceMesh *to_easy3d(const NestedCages::Mesh &mesh)
 {
 	auto emesh = new easy3d::SurfaceMesh();
@@ -70,19 +70,21 @@ int main(int argc, char **argv)
 	std::cout << "       NESTED CAGES GENERATOR           \n";
 	std::cout << "========================================\n\n";
 
-	std::string file_path = "bunny.obj";
-	NestedCages::Parameters params;
-	params.num_layers = 3;
-	params.decimation_ratio = 0.63;
-	params.flow_dt = 0.001;
+	std::string file_path = "homer.obj";
 
-	std::cout << "Enter mesh file path (default: bunny.obj): ";
+	// parameters
+	NestedCages::Parameters params;
+	params.num_layers = 1; // k in the paper
+	params.decimation_ratio = 0.63;
+	params.flow_dt = 0.001; // flow step size. 1e-3 is from the paper
+
+	std::cout << "Enter mesh file path (default: homer.obj): ";
 	std::string input;
 	std::getline(std::cin, input);
 	if (!input.empty())
 		file_path = input;
 
-	std::cout << "Enter number of layers (default: 3): ";
+	std::cout << "Enter number of layers (default: 1): ";
 	std::getline(std::cin, input);
 	if (!input.empty())
 		params.num_layers = std::stoi(input);
@@ -94,36 +96,37 @@ int main(int argc, char **argv)
 
 	std::cout << "\n[1] Initializing Viewer and loading mesh from: " << file_path << "...\n";
 
-	// Initialize the viewer early so we can safely use its model loading utilities
 	easy3d::Viewer viewer("Nested Cages Visualization");
-
 	easy3d::Model *raw_model = viewer.add_model(file_path);
 	if (!raw_model)
 	{
-		std::cerr << "Fatal Error: Could not load mesh!" << std::endl;
+		std::cerr << "rip: could not load mesh" << std::endl;
 		return EXIT_FAILURE;
 	}
 
 	auto base_mesh = dynamic_cast<easy3d::SurfaceMesh *>(raw_model);
 	if (!base_mesh)
 	{
-		std::cerr << "Fatal Error: Loaded model is not a valid SurfaceMesh." << std::endl;
+		std::cerr << "rip: not a valid surfacemesh" << std::endl;
 		return EXIT_FAILURE;
 	}
 
 	std::cout << "[2] Initializing Nested Cages Algorithm...\n";
+	// M0 from the paper. our starting hi-res mesh
 	NestedCages::Mesh eigen_input = to_eigen(base_mesh);
+
+	// fire up the algorithm
 	NestedCages nc(eigen_input, params);
 
 	std::cout << "[3] Computing Layers (This may take a while)...\n";
+
 	std::vector<NestedCages::Mesh> results = nc.compute();
 
 	std::cout << "[4] Preparing 3D Visualization...\n";
 	for (size_t i = 1; i < results.size(); ++i)
 	{
 		SurfaceMesh *out_mesh = to_easy3d(results[i]);
-
-		// Offset each generated cage horizontally so they don't visually overlap perfectly in the viewer
+		
 		auto points = out_mesh->get_vertex_property<vec3>("v:point");
 		for (auto v : out_mesh->vertices())
 		{
