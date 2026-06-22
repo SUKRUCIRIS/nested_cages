@@ -194,15 +194,30 @@ void NestedCages::build_ipc_mesh(const Eigen::MatrixXd &C_V, const Eigen::Matrix
 	igl::edges(combined_F, combined_E);
 }
 
+#include <ipc/collisions/normal/normal_collisions.hpp>
+#include <ipc/potentials/barrier_potential.hpp>
+
 NestedCages::Mesh NestedCages::reinflate(std::vector<Eigen::MatrixXd> &H, const Mesh &C_hat, const Mesh &F_orig)
 {
+	std::cout << "      [INIT] Structuring Isolated IPC Pipeline..." << std::endl;
 	Eigen::MatrixXd C_curr = C_hat.V;
 
-	// play history backwards
 	Eigen::MatrixXd F_curr = H.back();
 	H.pop_back();
 
-	// find a vertex to pin so ARAP doesn't float into space
+	// 1. Sanitize starting geometries
+	for (int i = 0; i < C_curr.rows(); ++i)
+	{
+		if (!C_curr.row(i).allFinite())
+			C_curr.row(i) = C_hat.V.row(i);
+	}
+	for (int i = 0; i < F_curr.rows(); ++i)
+	{
+		if (!F_curr.row(i).allFinite())
+			F_curr.row(i) = F_orig.V.row(i);
+	}
+
+	// 2. Setup ARAP for the Cage
 	Eigen::VectorXi FC;
 	igl::facet_components(C_hat.F, FC);
 	int num_components = (FC.size() > 0) ? FC.maxCoeff() + 1 : 0;
@@ -231,188 +246,272 @@ NestedCages::Mesh NestedCages::reinflate(std::vector<Eigen::MatrixXd> &H, const 
 		b(i) = pinned_verts[i];
 	Eigen::MatrixXd bc(b.size(), 3);
 
-	// setup arap to keep the cage looking nice (Esarap from paper)
 	igl::ARAPData arap_data;
 	arap_data.max_iter = 1;
 	igl::arap_precomputation(C_hat.V, C_hat.F, 3, b, arap_data);
 
-	// mash meshes together for ipc spatial hash
-	Eigen::MatrixXi comb_E, comb_F;
-	comb_F.resize(C_hat.F.rows() + F_orig.F.rows(), 3);
-	comb_F << C_hat.F, (F_orig.F.array() + C_hat.V.rows()).matrix();
-	igl::edges(comb_F, comb_E);
+	// 3. ISOLATED IPC SETUP: C_curr ONLY!
+	Eigen::MatrixXi C_E;
+	igl::edges(C_hat.F, C_E);
+	ipc::CollisionMesh collision_mesh(C_curr, C_E, C_hat.F);
 
-	Eigen::MatrixXd initial_comb_V(C_curr.rows() + F_curr.rows(), 3);
-	initial_comb_V << C_curr, F_curr;
+	double avg_edge_len = 0.0;
+	for (int i = 0; i < C_E.rows(); ++i)
+	{
+		avg_edge_len += (C_curr.row(C_E(i, 0)) - C_curr.row(C_E(i, 1))).norm();
+	}
+	if (C_E.rows() > 0)
+		avg_edge_len /= C_E.rows();
 
-	// black box collision handler
-	ipc::CollisionMesh collision_mesh(initial_comb_V, comb_E, comb_F);
+	Eigen::Vector3d bbox_min = C_curr.colwise().minCoeff();
+	Eigen::Vector3d bbox_max = C_curr.colwise().maxCoeff();
+	double max_allowable_disp = std::min((bbox_max - bbox_min).norm() * 0.01, avg_edge_len * 0.25);
+	if (max_allowable_disp < 1e-5)
+		max_allowable_disp = 1e-5;
 
 	int total_frames = H.size();
 	int current_frame = 0;
 
 	Eigen::MatrixXd C_arap_guess(C_curr.rows(), 3);
 	Eigen::MatrixXd U_C_arap(C_curr.rows(), 3);
-	Eigen::MatrixXd U_C_barrier(C_curr.rows(), 3);
+	Eigen::MatrixXd U_C_repel(C_curr.rows(), 3);
+	Eigen::MatrixXd U_C_ipc(C_curr.rows(), 3);
 	Eigen::MatrixXd U_C(C_curr.rows(), 3);
-	Eigen::MatrixXd U_F(F_curr.rows(), 3);
-	Eigen::MatrixXd comb_V(C_curr.rows() + F_curr.rows(), 3);
-	Eigen::MatrixXd comb_U(C_curr.rows() + F_curr.rows(), 3);
-	Eigen::MatrixXd comb_V_target(C_curr.rows() + F_curr.rows(), 3);
 
-	double avg_edge_len = 0.0;
-	for (int i = 0; i < comb_E.rows(); ++i)
-	{
-		avg_edge_len += (initial_comb_V.row(comb_E(i, 0)) - initial_comb_V.row(comb_E(i, 1))).norm();
-	}
-	if (comb_E.rows() > 0)
-		avg_edge_len /= comb_E.rows();
+	Eigen::MatrixXd C_VN, C_FN;
+	double dynamic_dhat = m_params.ipc_dhat;
 
-	Eigen::Vector3d bbox_min = C_curr.colwise().minCoeff();
-	Eigen::Vector3d bbox_max = C_curr.colwise().maxCoeff();
-
-	// strict bound so ipc doesn't run out of memory from crazy velocities
-	double max_allowable_disp = std::min((bbox_max - bbox_min).norm() * 0.01, avg_edge_len * 0.25);
-	if (max_allowable_disp < 1e-5)
-		max_allowable_disp = 1e-5;
-
-	Eigen::RowVector3d P_mat;
-	Eigen::RowVector3d F_closest;
-	Eigen::VectorXi I_face(1);
-	Eigen::VectorXd sqrD(1);
-
-	// reverse flow time!
 	while (!H.empty())
 	{
 		current_frame++;
-		if (current_frame % 5 == 0 || H.empty())
-		{
-			std::cout << "      Re-inflating Frame " << current_frame << " / " << total_frames << "...\n";
-		}
+		std::cout << "      Re-inflating Frame " << current_frame << " / " << total_frames << "..." << std::endl;
 
 		Eigen::MatrixXd F_target = std::move(H.back());
 		H.pop_back();
-		// fine mesh has "infinite mass", MUST hit its target
-		U_F.noalias() = F_target - F_curr;
 
-		// sanitize just in case so AABB doesn't crash
-		for (int i = 0; i < F_curr.rows(); ++i)
+		for (int i = 0; i < F_target.rows(); ++i)
 		{
-			if (!F_curr.row(i).allFinite())
-				F_curr.row(i) = F_orig.V.row(i);
+			if (!F_target.row(i).allFinite())
+				F_target.row(i) = F_orig.V.row(i);
 		}
 
-		igl::AABB<Eigen::MatrixXd, 3> f_tree;
-		f_tree.init(F_curr, F_orig.F);
+		int substep = 0;
 
-		comb_V.topRows(C_curr.rows()) = C_curr;
-		comb_V.bottomRows(F_curr.rows()) = F_curr;
-
-		double beta = m_params.reinflation_beta_init;
-		int bisection_count = 0;
-
-		while (true)
+		while (substep < 2000)
 		{
+			Eigen::MatrixXd U_F_total = F_target - F_curr;
+			double dist_to_target = U_F_total.rowwise().norm().maxCoeff();
+
+			if (dist_to_target < 1e-6)
+			{
+				F_curr = F_target;
+				break;
+			}
+
+			Eigen::MatrixXd U_F = U_F_total;
+			if (dist_to_target > max_allowable_disp)
+			{
+				U_F *= (max_allowable_disp / dist_to_target);
+			}
+
+			// FORCE 1: ARAP
 			for (int i = 0; i < b.size(); ++i)
 				bc.row(i) = C_curr.row(b(i));
-
 			C_arap_guess = C_curr;
 			igl::arap_solve(bc, arap_data, C_arap_guess);
 
+			bool arap_failed = false;
 			for (int i = 0; i < C_arap_guess.rows(); ++i)
 			{
 				if (!C_arap_guess.row(i).allFinite())
-					C_arap_guess.row(i) = C_curr.row(i);
-			}
-
-			U_C_arap.noalias() = C_arap_guess - C_curr;
-			U_C_barrier.setZero();
-
-			// hack: manual barrier force so IPC doesn't choke on CCD subdivision
-			if (beta > 1e-4)
-			{
-				for (int i = 0; i < C_curr.rows(); ++i)
 				{
-					P_mat = C_curr.row(i);
-					f_tree.squared_distance(F_curr, F_orig.F, P_mat, sqrD, I_face, F_closest);
-					double dist = std::sqrt(std::max(0.0, sqrD(0)));
+					arap_failed = true;
+					break;
+				}
+			}
+			if (arap_failed)
+				U_C_arap.setZero();
+			else
+				U_C_arap.noalias() = C_arap_guess - C_curr;
 
-					if (dist < m_params.ipc_dhat && dist > 1e-8)
+			// FORCE 2: Manual C-F Repulsion (The "Balloon" Force)
+			U_C_repel.setZero();
+			igl::per_vertex_normals(C_curr, C_hat.F, C_VN);
+			igl::per_face_normals(C_curr, C_hat.F, C_FN);
+
+			igl::AABB<Eigen::MatrixXd, 3> f_tree;
+			f_tree.init(F_curr, F_orig.F);
+			igl::AABB<Eigen::MatrixXd, 3> c_tree;
+			c_tree.init(C_curr, C_hat.F);
+
+			Eigen::VectorXi I_face(1);
+			Eigen::VectorXd sqrD(1);
+			Eigen::RowVector3d closest;
+
+			// Push C vertices away from F faces
+			for (int i = 0; i < C_curr.rows(); ++i)
+			{
+				f_tree.squared_distance(F_curr, F_orig.F, C_curr.row(i), sqrD, I_face, closest);
+				double dist = std::sqrt(std::max(0.0, sqrD(0)));
+				if (dist < dynamic_dhat)
+				{
+					double strength = std::pow(dynamic_dhat - dist, 2) * 50000.0;
+					Eigen::RowVector3d vn = C_VN.row(i);
+					if (vn.allFinite() && vn.norm() > 1e-8)
 					{
-						Eigen::RowVector3d dir = P_mat - F_closest;
-						if (dir.norm() > 1e-8)
-						{
-							dir.normalize();
-							// crank up strength to push it away early
-							double strength = std::pow(m_params.ipc_dhat - dist, 2) * 10000.0;
-							U_C_barrier.row(i) += strength * dir;
-						}
+						U_C_repel.row(i) += vn.normalized() * strength;
 					}
 				}
 			}
 
-			for (int i = 0; i < U_C_arap.rows(); ++i)
-				if (!U_C_arap.row(i).allFinite())
-					U_C_arap.row(i).setZero();
-			for (int i = 0; i < U_C_barrier.rows(); ++i)
-				if (!U_C_barrier.row(i).allFinite())
-					U_C_barrier.row(i).setZero();
-
-			// combine forces (maintain shape + avoid collision)
-			U_C.noalias() = beta * (U_C_arap + U_C_barrier);
-
-			comb_U.topRows(C_curr.rows()) = U_C;
-			comb_U.bottomRows(F_curr.rows()) = U_F;
-
-			// clamp insane speeds so we don't phase through geometry
-			for (int i = 0; i < comb_U.rows(); ++i)
+			// Push C faces away from F vertices
+			for (int i = 0; i < F_curr.rows(); ++i)
 			{
-				if (!comb_U.row(i).allFinite())
-					comb_U.row(i).setZero();
-
-				double v_norm = comb_U.row(i).norm();
-				if (std::isfinite(v_norm) && v_norm > max_allowable_disp)
+				c_tree.squared_distance(C_curr, C_hat.F, F_curr.row(i), sqrD, I_face, closest);
+				double dist = std::sqrt(std::max(0.0, sqrD(0)));
+				if (dist < dynamic_dhat)
 				{
-					comb_U.row(i) *= (max_allowable_disp / v_norm);
+					double strength = std::pow(dynamic_dhat - dist, 2) * 50000.0;
+					int f_idx = I_face(0);
+					Eigen::RowVector3d fn = C_FN.row(f_idx);
+					if (fn.allFinite() && fn.norm() > 1e-8)
+					{
+						Eigen::RowVector3d force = (fn.normalized() * strength) / 3.0;
+						U_C_repel.row(C_hat.F(f_idx, 0)) += force;
+						U_C_repel.row(C_hat.F(f_idx, 1)) += force;
+						U_C_repel.row(C_hat.F(f_idx, 2)) += force;
+					}
 				}
-
-				if (!comb_U.row(i).allFinite())
-					comb_U.row(i).setZero();
 			}
 
-			U_C = comb_U.topRows(C_curr.rows());
-			U_F = comb_U.bottomRows(F_curr.rows());
+			// FORCE 3: Exact IPC C-C Repulsion
+			U_C_ipc.setZero();
+			ipc::NormalCollisions collisions;
+			collisions.build(collision_mesh, C_curr, dynamic_dhat);
 
-			comb_V_target.noalias() = comb_V + comb_U;
+			ipc::BarrierPotential barrier_potential(dynamic_dhat);
+			Eigen::VectorXd grad_B = barrier_potential.gradient(collisions, collision_mesh, C_curr);
 
-			// ask IPC how far we can actually move without intersecting
-			double max_step = ipc::compute_collision_free_stepsize(collision_mesh, comb_V, comb_V_target);
-
-			// bisection loop if we got stuck (like in the paper)
-			if (max_step < 1.0)
+			if (grad_B.size() == C_curr.rows() * 3 && grad_B.allFinite())
 			{
-				beta *= 0.2;
-				bisection_count++;
-
-				if (bisection_count > 6)
+				for (int i = 0; i < C_curr.rows(); ++i)
 				{
-					double safe_step = max_step * 0.8;
-					// stop float noise from queuing up forever
-					if (safe_step < 1e-4)
-						safe_step = 0.0;
+					Eigen::RowVector3d g(-grad_B(i * 3 + 0), -grad_B(i * 3 + 1), -grad_B(i * 3 + 2));
+					if (g.norm() > 1e-8)
+					{
+						U_C_ipc.row(i) = g.normalized() * max_allowable_disp;
+					}
+				}
+			}
 
-					C_curr += safe_step * U_C;
-					F_curr += safe_step * U_F;
-					break;
+			// BLEND FORCES
+			U_C.setZero();
+			for (int i = 0; i < C_curr.rows(); ++i)
+			{
+				// Priority: Self-Intersection Shield > Balloon Expander > ARAP Shape
+				if (U_C_ipc.row(i).norm() > 1e-8)
+				{
+					U_C.row(i) = U_C_ipc.row(i) + (U_C_arap.row(i) * 0.05);
+				}
+				else if (U_C_repel.row(i).norm() > 1e-8)
+				{
+					U_C.row(i) = U_C_repel.row(i) + (U_C_arap.row(i) * 0.05);
+				}
+				else
+				{
+					U_C.row(i) = U_C_arap.row(i) * m_params.reinflation_beta_init;
+				}
+
+				double v_norm = U_C.row(i).norm();
+				if (v_norm > max_allowable_disp)
+					U_C.row(i) *= (max_allowable_disp / v_norm);
+			}
+
+			// ISOLATED CCD CHECK: We only test the safe step for C
+			Eigen::MatrixXd C_target_substep = C_curr + U_C;
+			double max_step = ipc::compute_collision_free_stepsize(collision_mesh, C_curr, C_target_substep);
+			if (!std::isfinite(max_step))
+				max_step = 0.0;
+
+			double step_fraction = max_step * 0.8;
+
+			// C is physically locked into itself
+			if (step_fraction < 1e-4)
+			{
+				dynamic_dhat *= 1.2;
+				if (dynamic_dhat > m_params.ipc_dhat * 10.0)
+					dynamic_dhat = m_params.ipc_dhat * 10.0;
+
+				// Blast C outward along its normal to force open the concavity
+				for (int i = 0; i < C_curr.rows(); ++i)
+				{
+					if (C_VN.row(i).allFinite() && C_VN.row(i).norm() > 1e-8)
+					{
+						C_curr.row(i) += C_VN.row(i).normalized() * (max_allowable_disp * 0.1);
+					}
 				}
 			}
 			else
 			{
-				C_curr += U_C;
-				F_curr += U_F;
-				break;
+				if (step_fraction > 1.0)
+					step_fraction = 1.0;
+
+				// Step both meshes cleanly
+				C_curr += step_fraction * U_C;
+				F_curr += step_fraction * U_F;
+
+				dynamic_dhat = m_params.ipc_dhat;
+			}
+
+			substep++;
+		}
+	}
+
+	// ====================================================================
+	// THE FINAL POLISH: Clear the "Flat Dome" equilibrium clipping
+	// ====================================================================
+	std::cout << "      [FINAL POLISH] Ensuring strict cage clearance..." << std::endl;
+
+	for (int iter = 0; iter < 50; ++iter)
+	{
+		igl::AABB<Eigen::MatrixXd, 3> final_tree;
+		final_tree.init(C_curr, C_hat.F);
+
+		Eigen::MatrixXd C_FN;
+		igl::per_face_normals(C_curr, C_hat.F, C_FN);
+
+		Eigen::VectorXi I_face(1);
+		Eigen::VectorXd sqrD(1);
+		Eigen::RowVector3d closest;
+
+		bool needs_push = false;
+
+		// Check every vertex of the high-res original mesh against the final cage
+		for (int i = 0; i < F_orig.V.rows(); ++i)
+		{
+			final_tree.squared_distance(C_curr, C_hat.F, F_orig.V.row(i), sqrD, I_face, closest);
+			double dist = std::sqrt(std::max(0.0, sqrD(0)));
+
+			// If the fine mesh is touching or dangerously close to the cage
+			if (dist < m_params.ipc_dhat * 1.5)
+			{
+				needs_push = true;
+				int f_idx = I_face(0);
+				Eigen::RowVector3d fn = C_FN.row(f_idx);
+
+				if (fn.allFinite() && fn.norm() > 1e-8)
+				{
+					// Push the face strictly outward along its normal, ignoring ARAP
+					Eigen::RowVector3d push = (fn.normalized() * max_allowable_disp * 0.5) / 3.0;
+					C_curr.row(C_hat.F(f_idx, 0)) += push;
+					C_curr.row(C_hat.F(f_idx, 1)) += push;
+					C_curr.row(C_hat.F(f_idx, 2)) += push;
+				}
 			}
 		}
+		// If the cage is totally clear of the fine mesh, we are done.
+		if (!needs_push)
+			break;
 	}
 
 	Mesh C_final;
