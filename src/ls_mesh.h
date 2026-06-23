@@ -1,5 +1,16 @@
 #pragma once
-#include "./game/game.h"
+#include <vector>
+#include <unordered_set>
+#include <Eigen/Core>
+#include <Eigen/Sparse>
+#include <Eigen/IterativeLinearSolvers>
+
+#ifndef GLuint
+using GLuint = unsigned int;
+#endif
+#ifndef GLfloat
+using GLfloat = float;
+#endif
 
 class ls_mesh
 {

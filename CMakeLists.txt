@@ -23,8 +23,9 @@ add_subdirectory(third_party/ipc-toolkit)
 add_subdirectory(third_party/Easy3D)
 add_subdirectory(third_party/libigl)
 add_subdirectory(third_party/cgal)
+add_subdirectory(third_party/cglm)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party/ipc-toolkit/src)
-add_executable(nested_cages ./src/main.cpp ./src/nested_cages.cpp)
+add_executable(nested_cages ./src/main.cpp ./src/nested_cages.cpp ./src/ls_mesh.cpp)
 target_include_directories(nested_cages PRIVATE 
     ${CMAKE_BINARY_DIR}/third_party/ipc-toolkit/include
 )
@@ -47,6 +48,7 @@ target_link_libraries(nested_cages
     ipc::toolkit
 	spdlog::spdlog
 	OpenMP::OpenMP_CXX
+	cglm
 )
 
 target_link_options(nested_cages PRIVATE "-Wl,--allow-multiple-definition")

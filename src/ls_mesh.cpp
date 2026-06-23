@@ -1,6 +1,7 @@
 #include "ls_mesh.h"
 #include <iostream>
 #include <random>
+#include <cglm/cglm.h>
 
 void ls_mesh::create_neighbormap_from_indices()
 {
@@ -402,7 +403,7 @@ std::vector<unsigned int> ls_mesh::greedy_cp(int control_count, float control_we
 		if (!already_exists)
 		{
 			control_points.push_back(max_error_index);
-			printf("New cp added: %d\n", control_points.size());
+			// printf("New cp added: %d\n", control_points.size());
 		}
 		else
 		{
@@ -509,7 +510,7 @@ std::vector<unsigned int> ls_mesh::iterative_greedy_cp(int control_count, float 
 			break;
 		}
 
-		printf("New CPs added this iteration: %zu. Total control points: %zu\n", points_added_this_iter, control_points.size());
+		// printf("New CPs added this iteration: %zu. Total control points: %zu\n", points_added_this_iter, control_points.size());
 	}
 
 	return control_points;
