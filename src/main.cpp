@@ -206,12 +206,19 @@ int main(int argc, char **argv)
 
 	std::cout << "Select execution mode:\n";
 	std::cout << "[1] Calculate new nested cages\n";
-	std::cout << "[2] Load existing layers (homer.obj & layer_1.obj)\n";
+	std::cout << "[2] Load existing layers\n";
 	std::cout << "Choice (default: 1): ";
 
 	std::string input;
 	std::getline(std::cin, input);
 	int mode = input.empty() ? 1 : std::stoi(input);
+
+	// Original File Prompt (Applies to both modes now)
+	std::string file_path = "homer.obj";
+	std::cout << "Enter original mesh file path (default: homer.obj): ";
+	std::getline(std::cin, input);
+	if (!input.empty())
+		file_path = input;
 
 	float decimation_ratio = 0.63f;
 	if (mode == 1)
@@ -251,16 +258,10 @@ int main(int argc, char **argv)
 
 	if (mode == 1)
 	{
-		std::string file_path = "homer.obj";
 		NestedCages::Parameters params;
 		params.num_layers = 1;
 		params.decimation_ratio = decimation_ratio;
 		params.flow_dt = 0.001;
-
-		std::cout << "Enter mesh file path (default: homer.obj): ";
-		std::getline(std::cin, input);
-		if (!input.empty())
-			file_path = input;
 
 		std::cout << "\n[1] Initializing Viewer and loading mesh...\n";
 		raw_model = viewer.add_model(file_path);
@@ -300,10 +301,13 @@ int main(int argc, char **argv)
 	else if (mode == 2)
 	{
 		std::cout << "\nLoading existing files...\n";
-		raw_model = viewer.add_model("homer.obj");
+
+		// Use the dynamically provided file_path
+		raw_model = viewer.add_model(file_path);
 		if (raw_model)
 			set_model_color(raw_model, easy3d::vec4(1.0f, 0.0f, 0.0f, 1.0f));
 
+		// Layer 1 is guaranteed to be layer_1.obj
 		easy3d::Model *layer_model = viewer.add_model("layer_1.obj");
 		if (layer_model)
 		{
@@ -344,11 +348,13 @@ int main(int argc, char **argv)
 		auto orig_mesh = dynamic_cast<easy3d::SurfaceMesh *>(raw_model);
 		auto l1_mesh = dynamic_cast<easy3d::SurfaceMesh *>(l1_full_model);
 
-		// Extract Original Mesh Data
+		// Extract Original Mesh Data & Calculate Bounding Limits
 		std::vector<GLuint> orig_indices;
 		std::vector<GLfloat> orig_vertices;
 		float min_x = std::numeric_limits<float>::max();
 		float max_x = std::numeric_limits<float>::lowest();
+		float min_z = std::numeric_limits<float>::max();
+		float max_z = std::numeric_limits<float>::lowest();
 
 		auto orig_points = orig_mesh->get_vertex_property<vec3>("v:point");
 		for (auto v : orig_mesh->vertices())
@@ -356,10 +362,16 @@ int main(int argc, char **argv)
 			float x = orig_points[v].x;
 			float y = orig_points[v].y;
 			float z = orig_points[v].z;
+
 			if (x < min_x)
 				min_x = x;
 			if (x > max_x)
 				max_x = x;
+			if (z < min_z)
+				min_z = z;
+			if (z > max_z)
+				max_z = z;
+
 			orig_vertices.push_back(x);
 			orig_vertices.push_back(y);
 			orig_vertices.push_back(z);
@@ -400,10 +412,13 @@ int main(int argc, char **argv)
 			}
 		}
 
-		// Calculate offsets for Side-by-Side Left-to-Right viewing
+		// Calculate offsets for Side-by-Side (X) and Background (Z) viewing
 		float x_span = (max_x - min_x) * 1.25f;
 		float offset_1 = x_span;		// Middle (Regular LS)
 		float offset_2 = x_span * 2.0f; // Right (Your Method LS)
+
+		float z_span = (max_z - min_z) * 1.5f;
+		float z_offset_behind = -z_span; // Push backwards along Z axis
 
 		// ==========================================
 		// PIPELINE A: REGULAR LS (Original Mesh Only)
@@ -556,6 +571,34 @@ int main(int argc, char **argv)
 		}
 		auto d3_cp_model = viewer.add_model(d3_cp_emesh);
 		viewer.cp_models.push_back(d3_cp_model);
+
+		// Display 4: Layer 1 Proxy Cage (Behind Display 3, Z-Offset = z_offset_behind, Yellow)
+		easy3d::SurfaceMesh *d4_emesh = new easy3d::SurfaceMesh();
+		std::vector<easy3d::SurfaceMesh::Vertex> d4_vh;
+		for (size_t i = 0; i < l1_vertices.size() / 9; ++i)
+		{
+			d4_vh.push_back(d4_emesh->add_vertex(vec3(
+				l1_vertices[i * 9 + 0] + offset_2,
+				l1_vertices[i * 9 + 1],
+				l1_vertices[i * 9 + 2] + z_offset_behind)));
+		}
+		for (size_t i = 0; i < l1_indices.size(); i += 3)
+		{
+			d4_emesh->add_face({d4_vh[l1_indices[i]], d4_vh[l1_indices[i + 1]], d4_vh[l1_indices[i + 2]]});
+		}
+		auto d4_model = viewer.add_model(d4_emesh);
+		set_model_color(d4_model, easy3d::vec4(1.0f, 1.0f, 0.0f, 1.0f));
+
+		easy3d::SurfaceMesh *d4_cp_emesh = new easy3d::SurfaceMesh();
+		for (auto cp : l1_cps)
+		{
+			d4_cp_emesh->add_vertex(vec3(
+				l1_vertices[cp * 9 + 0] + offset_2,
+				l1_vertices[cp * 9 + 1],
+				l1_vertices[cp * 9 + 2] + z_offset_behind));
+		}
+		auto d4_cp_model = viewer.add_model(d4_cp_emesh);
+		viewer.cp_models.push_back(d4_cp_model);
 
 		// Global CP Renderer Setup
 		for (auto cp_mod : viewer.cp_models)
