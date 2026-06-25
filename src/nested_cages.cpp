@@ -14,7 +14,6 @@
 #include <igl/writeOBJ.h>
 #include <iostream>
 
-// using IPC to handle the collision math
 #include <ipc/ipc.hpp>
 #include <ipc/collision_mesh.hpp>
 
@@ -26,7 +25,6 @@ std::vector<NestedCages::Mesh> NestedCages::compute()
 	std::vector<Mesh> layers;
 	layers.push_back(m_input_mesh);
 
-	// alg 1: main loop to build each layer
 	for (int i = 1; i <= m_params.num_layers; ++i)
 	{
 		std::cout << "\n========================================\n";
@@ -36,21 +34,20 @@ std::vector<NestedCages::Mesh> NestedCages::compute()
 		Mesh M_prev = layers.back();
 
 		std::cout << "  [1/3] Decimating coarse cage...\n";
-		// step 1: paper just says use a black box decimator. libigl works fine.
+
 		Mesh C_hat = decimate(M_prev, m_params.decimation_ratio);
 		Mesh F = M_prev;
 
 		std::cout << "  [2/3] Flowing fine mesh inside coarse cage...\n";
-		// step 2 (alg 2): shrink F until it fits entirely inside C_hat
+
 		std::vector<Eigen::MatrixXd> H = shrink(C_hat, F);
 
 		std::cout << "  [3/3] Re-inflating with ARAP & IPC CCD (Frames: " << H.size() << ")...\n";
-		// step 3 (alg 3): blow it back up but block intersections
+
 		Mesh M_i = reinflate(H, C_hat, F);
 
 		layers.push_back(M_i);
 
-		// dump to obj
 		std::string filename = "layer_" + std::to_string(i) + ".obj";
 		igl::writeOBJ(filename, M_i.V, M_i.F);
 		std::cout << "  [SAVED] Layer " << i << " successfully written to " << filename << "\n";
@@ -62,7 +59,7 @@ NestedCages::Mesh NestedCages::decimate(const Mesh &input, double target_ratio)
 {
 	Mesh output;
 	Eigen::VectorXi J, I;
-	// don't decimate below a tet (4 faces) or it crashes
+
 	int target_faces = std::max(4, static_cast<int>(input.F.rows() * target_ratio));
 
 	igl::decimate(input.V, input.F, target_faces, false, output.V, output.F, J, I);
@@ -81,14 +78,12 @@ std::vector<Eigen::MatrixXd> NestedCages::shrink(const Mesh &C_hat, const Mesh &
 	Eigen::MatrixXd FN;
 	igl::per_face_normals(C_hat.V, C_hat.F, FN);
 
-	// fix nans from garbage triangles
 	for (int i = 0; i < FN.rows(); ++i)
 	{
 		if (!FN.row(i).allFinite())
 			FN.row(i) = Eigen::RowVector3d(1, 0, 0);
 	}
 
-	// paper uses 3-point quadrature for the integral
 	std::vector<Eigen::Vector3d> quad_bary = {
 		Eigen::Vector3d(0.5, 0.5, 0.0),
 		Eigen::Vector3d(0.0, 0.5, 0.5),
@@ -116,7 +111,7 @@ std::vector<Eigen::MatrixXd> NestedCages::shrink(const Mesh &C_hat, const Mesh &
 
 			for (const auto &bary : quad_bary)
 			{
-				// get 3d pos of the quad point
+
 				p_quad.row(0) = bary(0) * F_curr.row(F.F(i, 0)) +
 								bary(1) * F_curr.row(F.F(i, 1)) +
 								bary(2) * F_curr.row(F.F(i, 2));
@@ -127,7 +122,6 @@ std::vector<Eigen::MatrixXd> NestedCages::shrink(const Mesh &C_hat, const Mesh &
 				Eigen::RowVector3d dir = p_quad.row(0) - C_closest.row(0);
 				double sign = 1.0;
 
-				// check if inside using normals. paper warned about this but it's usually fine
 				if (dist > 1e-7)
 				{
 					sign = (dir.dot(FN.row(I_face(0))) < 0) ? -1.0 : 1.0;
@@ -136,7 +130,6 @@ std::vector<Eigen::MatrixXd> NestedCages::shrink(const Mesh &C_hat, const Mesh &
 				if (sign > 0)
 					points_outside++;
 
-				// grad of signed distance (eq 6)
 				Eigen::RowVector3d g;
 				if (dist > 1e-5)
 				{
@@ -144,10 +137,9 @@ std::vector<Eigen::MatrixXd> NestedCages::shrink(const Mesh &C_hat, const Mesh &
 				}
 				else
 				{
-					g = -FN.row(I_face(0)); // fallback if touching
+					g = -FN.row(I_face(0));
 				}
 
-				// push gradient to the 3 vertices (eq 4 & 5)
 				double w0 = quad_weight * bary(0);
 				double w1 = quad_weight * bary(1);
 				double w2 = quad_weight * bary(2);
@@ -166,7 +158,6 @@ std::vector<Eigen::MatrixXd> NestedCages::shrink(const Mesh &C_hat, const Mesh &
 			std::cout << "      Flow Iteration " << iter << " | Points outside: " << points_outside << "\n";
 		}
 
-		// stop when it's fully inside
 		if (points_outside == 0)
 			break;
 
@@ -176,7 +167,6 @@ std::vector<Eigen::MatrixXd> NestedCages::shrink(const Mesh &C_hat, const Mesh &
 				grad_Phi.row(i).setZero();
 		}
 
-		// euler step down the gradient
 		F_curr -= m_params.flow_dt * grad_Phi;
 		H.push_back(F_curr);
 	}
@@ -205,7 +195,6 @@ NestedCages::Mesh NestedCages::reinflate(std::vector<Eigen::MatrixXd> &H, const 
 	Eigen::MatrixXd F_curr = H.back();
 	H.pop_back();
 
-	// 1. Sanitize starting geometries
 	for (int i = 0; i < C_curr.rows(); ++i)
 	{
 		if (!C_curr.row(i).allFinite())
@@ -217,7 +206,6 @@ NestedCages::Mesh NestedCages::reinflate(std::vector<Eigen::MatrixXd> &H, const 
 			F_curr.row(i) = F_orig.V.row(i);
 	}
 
-	// 2. Setup ARAP for the Cage
 	Eigen::VectorXi FC;
 	igl::facet_components(C_hat.F, FC);
 	int num_components = (FC.size() > 0) ? FC.maxCoeff() + 1 : 0;
@@ -250,7 +238,6 @@ NestedCages::Mesh NestedCages::reinflate(std::vector<Eigen::MatrixXd> &H, const 
 	arap_data.max_iter = 1;
 	igl::arap_precomputation(C_hat.V, C_hat.F, 3, b, arap_data);
 
-	// 3. ISOLATED IPC SETUP: C_curr ONLY!
 	Eigen::MatrixXi C_E;
 	igl::edges(C_hat.F, C_E);
 	ipc::CollisionMesh collision_mesh(C_curr, C_E, C_hat.F);
@@ -314,7 +301,6 @@ NestedCages::Mesh NestedCages::reinflate(std::vector<Eigen::MatrixXd> &H, const 
 				U_F *= (max_allowable_disp / dist_to_target);
 			}
 
-			// FORCE 1: ARAP
 			for (int i = 0; i < b.size(); ++i)
 				bc.row(i) = C_curr.row(b(i));
 			C_arap_guess = C_curr;
@@ -334,7 +320,6 @@ NestedCages::Mesh NestedCages::reinflate(std::vector<Eigen::MatrixXd> &H, const 
 			else
 				U_C_arap.noalias() = C_arap_guess - C_curr;
 
-			// FORCE 2: Manual C-F Repulsion (The "Balloon" Force)
 			U_C_repel.setZero();
 			igl::per_vertex_normals(C_curr, C_hat.F, C_VN);
 			igl::per_face_normals(C_curr, C_hat.F, C_FN);
@@ -348,7 +333,6 @@ NestedCages::Mesh NestedCages::reinflate(std::vector<Eigen::MatrixXd> &H, const 
 			Eigen::VectorXd sqrD(1);
 			Eigen::RowVector3d closest;
 
-			// Push C vertices away from F faces
 			for (int i = 0; i < C_curr.rows(); ++i)
 			{
 				f_tree.squared_distance(F_curr, F_orig.F, C_curr.row(i), sqrD, I_face, closest);
@@ -364,7 +348,6 @@ NestedCages::Mesh NestedCages::reinflate(std::vector<Eigen::MatrixXd> &H, const 
 				}
 			}
 
-			// Push C faces away from F vertices
 			for (int i = 0; i < F_curr.rows(); ++i)
 			{
 				c_tree.squared_distance(C_curr, C_hat.F, F_curr.row(i), sqrD, I_face, closest);
@@ -384,7 +367,6 @@ NestedCages::Mesh NestedCages::reinflate(std::vector<Eigen::MatrixXd> &H, const 
 				}
 			}
 
-			// FORCE 3: Exact IPC C-C Repulsion
 			U_C_ipc.setZero();
 			ipc::NormalCollisions collisions;
 			collisions.build(collision_mesh, C_curr, dynamic_dhat);
@@ -404,11 +386,10 @@ NestedCages::Mesh NestedCages::reinflate(std::vector<Eigen::MatrixXd> &H, const 
 				}
 			}
 
-			// BLEND FORCES
 			U_C.setZero();
 			for (int i = 0; i < C_curr.rows(); ++i)
 			{
-				// Priority: Self-Intersection Shield > Balloon Expander > ARAP Shape
+
 				if (U_C_ipc.row(i).norm() > 1e-8)
 				{
 					U_C.row(i) = U_C_ipc.row(i) + (U_C_arap.row(i) * 0.05);
@@ -427,7 +408,6 @@ NestedCages::Mesh NestedCages::reinflate(std::vector<Eigen::MatrixXd> &H, const 
 					U_C.row(i) *= (max_allowable_disp / v_norm);
 			}
 
-			// ISOLATED CCD CHECK: We only test the safe step for C
 			Eigen::MatrixXd C_target_substep = C_curr + U_C;
 			double max_step = ipc::compute_collision_free_stepsize(collision_mesh, C_curr, C_target_substep);
 			if (!std::isfinite(max_step))
@@ -435,14 +415,12 @@ NestedCages::Mesh NestedCages::reinflate(std::vector<Eigen::MatrixXd> &H, const 
 
 			double step_fraction = max_step * 0.8;
 
-			// C is physically locked into itself
 			if (step_fraction < 1e-4)
 			{
 				dynamic_dhat *= 1.2;
 				if (dynamic_dhat > m_params.ipc_dhat * 10.0)
 					dynamic_dhat = m_params.ipc_dhat * 10.0;
 
-				// Blast C outward along its normal to force open the concavity
 				for (int i = 0; i < C_curr.rows(); ++i)
 				{
 					if (C_VN.row(i).allFinite() && C_VN.row(i).norm() > 1e-8)
@@ -456,7 +434,6 @@ NestedCages::Mesh NestedCages::reinflate(std::vector<Eigen::MatrixXd> &H, const 
 				if (step_fraction > 1.0)
 					step_fraction = 1.0;
 
-				// Step both meshes cleanly
 				C_curr += step_fraction * U_C;
 				F_curr += step_fraction * U_F;
 
@@ -467,9 +444,6 @@ NestedCages::Mesh NestedCages::reinflate(std::vector<Eigen::MatrixXd> &H, const 
 		}
 	}
 
-	// ====================================================================
-	// THE FINAL POLISH: Clear the "Flat Dome" equilibrium clipping
-	// ====================================================================
 	std::cout << "      [FINAL POLISH] Ensuring strict cage clearance..." << std::endl;
 
 	for (int iter = 0; iter < 50; ++iter)
@@ -486,13 +460,11 @@ NestedCages::Mesh NestedCages::reinflate(std::vector<Eigen::MatrixXd> &H, const 
 
 		bool needs_push = false;
 
-		// Check every vertex of the high-res original mesh against the final cage
 		for (int i = 0; i < F_orig.V.rows(); ++i)
 		{
 			final_tree.squared_distance(C_curr, C_hat.F, F_orig.V.row(i), sqrD, I_face, closest);
 			double dist = std::sqrt(std::max(0.0, sqrD(0)));
 
-			// If the fine mesh is touching or dangerously close to the cage
 			if (dist < m_params.ipc_dhat * 1.5)
 			{
 				needs_push = true;
@@ -501,7 +473,7 @@ NestedCages::Mesh NestedCages::reinflate(std::vector<Eigen::MatrixXd> &H, const 
 
 				if (fn.allFinite() && fn.norm() > 1e-8)
 				{
-					// Push the face strictly outward along its normal, ignoring ARAP
+
 					Eigen::RowVector3d push = (fn.normalized() * max_allowable_disp * 0.5) / 3.0;
 					C_curr.row(C_hat.F(f_idx, 0)) += push;
 					C_curr.row(C_hat.F(f_idx, 1)) += push;
@@ -509,7 +481,7 @@ NestedCages::Mesh NestedCages::reinflate(std::vector<Eigen::MatrixXd> &H, const 
 				}
 			}
 		}
-		// If the cage is totally clear of the fine mesh, we are done.
+
 		if (!needs_push)
 			break;
 	}

@@ -213,7 +213,6 @@ int main(int argc, char **argv)
 	std::getline(std::cin, input);
 	int mode = input.empty() ? 1 : std::stoi(input);
 
-	// Original File Prompt (Applies to both modes now)
 	std::string file_path = "homer.obj";
 	std::cout << "Enter original mesh file path (default: homer.obj): ";
 	std::getline(std::cin, input);
@@ -302,12 +301,10 @@ int main(int argc, char **argv)
 	{
 		std::cout << "\nLoading existing files...\n";
 
-		// Use the dynamically provided file_path
 		raw_model = viewer.add_model(file_path);
 		if (raw_model)
 			set_model_color(raw_model, easy3d::vec4(1.0f, 0.0f, 0.0f, 1.0f));
 
-		// Layer 1 is guaranteed to be layer_1.obj
 		easy3d::Model *layer_model = viewer.add_model("layer_1.obj");
 		if (layer_model)
 		{
@@ -328,7 +325,6 @@ int main(int argc, char **argv)
 		}
 	}
 
-	// --- LEAST SQUARES MESH OPTIMIZATION COMPARISON ---
 	if (run_ls == 1 && raw_model && l1_full_model)
 	{
 		viewer.is_ls_mode = true;
@@ -337,7 +333,6 @@ int main(int argc, char **argv)
 		std::cout << "  RUNNING LS MESH PIPELINE COMPARISON   \n";
 		std::cout << "========================================\n";
 
-		// Hide the source models; we will build our own shifted display meshes
 		if (raw_model->renderer())
 			raw_model->renderer()->set_visible(false);
 		if (l1_full_model->renderer())
@@ -348,7 +343,6 @@ int main(int argc, char **argv)
 		auto orig_mesh = dynamic_cast<easy3d::SurfaceMesh *>(raw_model);
 		auto l1_mesh = dynamic_cast<easy3d::SurfaceMesh *>(l1_full_model);
 
-		// Extract Original Mesh Data & Calculate Bounding Limits
 		std::vector<GLuint> orig_indices;
 		std::vector<GLfloat> orig_vertices;
 		float min_x = std::numeric_limits<float>::max();
@@ -389,7 +383,6 @@ int main(int argc, char **argv)
 			}
 		}
 
-		// Extract Layer 1 Data
 		std::vector<GLuint> l1_indices;
 		std::vector<GLfloat> l1_vertices;
 		auto l1_points = l1_mesh->get_vertex_property<vec3>("v:point");
@@ -412,17 +405,13 @@ int main(int argc, char **argv)
 			}
 		}
 
-		// Calculate offsets for Side-by-Side (X) and Background (Z) viewing
 		float x_span = (max_x - min_x) * 1.25f;
-		float offset_1 = x_span;		// Middle (Regular LS)
-		float offset_2 = x_span * 2.0f; // Right (Your Method LS)
+		float offset_1 = x_span;
+		float offset_2 = x_span * 2.0f;
 
 		float z_span = (max_z - min_z) * 1.5f;
-		float z_offset_behind = -z_span; // Push backwards along Z axis
+		float z_offset_behind = -z_span;
 
-		// ==========================================
-		// PIPELINE A: REGULAR LS (Original Mesh Only)
-		// ==========================================
 		std::cout << "\n[PIPELINE A] Regular LS Computation...\n";
 		auto tA_start = std::chrono::high_resolution_clock::now();
 
@@ -443,13 +432,9 @@ int main(int argc, char **argv)
 		std::cout << "  -> Total Time: " << tA_total.count() << " seconds\n";
 		std::cout << "  -> Reconstruction Error: " << reg_error << "\n";
 
-		// ==========================================
-		// PIPELINE B: YOUR METHOD (Proxy via Layer 1)
-		// ==========================================
 		std::cout << "\n[PIPELINE B] 'My Method' Computation...\n";
 		auto tB_start = std::chrono::high_resolution_clock::now();
 
-		// Step 1: Find Control Points on Layer 1 Proxy
 		ls_mesh l1_ls(l1_indices, l1_vertices);
 		std::vector<unsigned int> l1_cps;
 		if (cp_type == 1)
@@ -463,7 +448,6 @@ int main(int argc, char **argv)
 		std::chrono::duration<double> tB_step1 = tB_s1 - tB_start;
 		std::cout << "  -> Step 1 (Find CP on L1): " << tB_step1.count() << " sec\n";
 
-		// Step 2: Map Layer 1 Control Points to nearest Original Mesh vertices
 		std::vector<unsigned int> mapped_cps;
 		unsigned int orig_v_count = orig_vertices.size() / 9;
 
@@ -491,7 +475,6 @@ int main(int argc, char **argv)
 			mapped_cps.push_back(best_orig_idx);
 		}
 
-		// Ensure uniqueness if multiple proxy points snap to the same high-res vertex
 		std::sort(mapped_cps.begin(), mapped_cps.end());
 		mapped_cps.erase(std::unique(mapped_cps.begin(), mapped_cps.end()), mapped_cps.end());
 
@@ -499,7 +482,6 @@ int main(int argc, char **argv)
 		std::chrono::duration<double> tB_step2 = tB_s2 - tB_s1;
 		std::cout << "  -> Step 2 (Nearest-Neighbor Mapping): " << tB_step2.count() << " sec (" << mapped_cps.size() << " unique CPs)\n";
 
-		// Step 3: Run Full LS on Original using Mapped CPs
 		float my_error = 0.0f;
 		std::vector<GLfloat> my_new_vertices = orig_ls.calc_vertices(mapped_cps, 10.0f, true, &my_error);
 
@@ -510,11 +492,6 @@ int main(int argc, char **argv)
 		std::cout << "  -> Total Time: " << tB_total.count() << " seconds\n";
 		std::cout << "  -> Reconstruction Error: " << my_error << "\n";
 
-		// ==========================================
-		// VISUALIZATION GENERATION
-		// ==========================================
-
-		// Display 1: Original Mesh (Left, X-Offset = 0, Red)
 		easy3d::SurfaceMesh *d1_emesh = new easy3d::SurfaceMesh();
 		std::vector<easy3d::SurfaceMesh::Vertex> d1_vh;
 		for (size_t i = 0; i < orig_vertices.size() / 9; ++i)
@@ -528,7 +505,6 @@ int main(int argc, char **argv)
 		auto d1_model = viewer.add_model(d1_emesh);
 		set_model_color(d1_model, easy3d::vec4(1.0f, 0.0f, 0.0f, 1.0f));
 
-		// Display 2: Regular LS Mesh (Center, X-Offset = offset_1, Blue)
 		easy3d::SurfaceMesh *d2_emesh = new easy3d::SurfaceMesh();
 		std::vector<easy3d::SurfaceMesh::Vertex> d2_vh;
 		for (size_t i = 0; i < reg_new_vertices.size() / 9; ++i)
@@ -550,7 +526,6 @@ int main(int argc, char **argv)
 		auto d2_cp_model = viewer.add_model(d2_cp_emesh);
 		viewer.cp_models.push_back(d2_cp_model);
 
-		// Display 3: Your Method LS Mesh (Right, X-Offset = offset_2, Cyan)
 		easy3d::SurfaceMesh *d3_emesh = new easy3d::SurfaceMesh();
 		std::vector<easy3d::SurfaceMesh::Vertex> d3_vh;
 		for (size_t i = 0; i < my_new_vertices.size() / 9; ++i)
@@ -572,7 +547,6 @@ int main(int argc, char **argv)
 		auto d3_cp_model = viewer.add_model(d3_cp_emesh);
 		viewer.cp_models.push_back(d3_cp_model);
 
-		// Display 4: Layer 1 Proxy Cage (Behind Display 3, Z-Offset = z_offset_behind, Yellow)
 		easy3d::SurfaceMesh *d4_emesh = new easy3d::SurfaceMesh();
 		std::vector<easy3d::SurfaceMesh::Vertex> d4_vh;
 		for (size_t i = 0; i < l1_vertices.size() / 9; ++i)
@@ -600,7 +574,6 @@ int main(int argc, char **argv)
 		auto d4_cp_model = viewer.add_model(d4_cp_emesh);
 		viewer.cp_models.push_back(d4_cp_model);
 
-		// Global CP Renderer Setup
 		for (auto cp_mod : viewer.cp_models)
 		{
 			if (cp_mod && cp_mod->renderer())
@@ -611,7 +584,7 @@ int main(int argc, char **argv)
 					pt_draw->set_visible(true);
 					pt_draw->set_point_size(10.0f);
 					pt_draw->set_coloring_method(easy3d::State::UNIFORM_COLOR);
-					pt_draw->set_color(easy3d::vec4(0.0f, 1.0f, 0.0f, 1.0f)); // Green dots
+					pt_draw->set_color(easy3d::vec4(0.0f, 1.0f, 0.0f, 1.0f));
 				}
 				auto face_draw = cp_mod->renderer()->get_triangles_drawable("faces");
 				if (face_draw)

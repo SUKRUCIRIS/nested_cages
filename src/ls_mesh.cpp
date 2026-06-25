@@ -25,7 +25,6 @@ void ls_mesh::create_neighbormap_from_indices()
 			continue;
 		}
 
-		// Make bidirectional connections for this triangle
 		neighbors[v0].insert(v1);
 		neighbors[v0].insert(v2);
 
@@ -47,14 +46,12 @@ void recompute_normals(std::vector<GLfloat> &verts, const std::vector<GLuint> &i
 {
 	unsigned int vcount = verts.size() / 9;
 
-	// accumulate normals per vertex
 	std::vector<vec3> accum(vcount);
 	for (unsigned int i = 0; i < vcount; ++i)
 	{
-		glm_vec3_zero(accum[i]); // initialize to zero
+		glm_vec3_zero(accum[i]);
 	}
 
-	// loop over faces
 	for (size_t f = 0; f + 2 < inds.size(); f += 3)
 	{
 		unsigned int i0 = inds[f];
@@ -79,7 +76,6 @@ void recompute_normals(std::vector<GLfloat> &verts, const std::vector<GLuint> &i
 		glm_vec3_add(accum[i2], n, accum[i2]);
 	}
 
-	// normalize per-vertex normal and write back
 	for (unsigned int i = 0; i < vcount; ++i)
 	{
 		if (glm_vec3_norm(accum[i]) > 0.0f)
@@ -94,7 +90,7 @@ void recompute_normals(std::vector<GLfloat> &verts, const std::vector<GLuint> &i
 
 std::vector<GLfloat> ls_mesh::calc_vertices(std::vector<unsigned int> control_points, float control_weight, bool is_uniform, float *error_average) const
 {
-	const size_t FLOATS_PER_VERTEX = 9; // change this if your layout differs
+	const size_t FLOATS_PER_VERTEX = 9;
 	if (orig_vertices.size() % FLOATS_PER_VERTEX != 0)
 	{
 		std::cerr << "Warning: vertices size not divisible by FLOATS_PER_VERTEX\n";
@@ -102,14 +98,11 @@ std::vector<GLfloat> ls_mesh::calc_vertices(std::vector<unsigned int> control_po
 
 	unsigned int vertex_count = static_cast<unsigned int>(orig_vertices.size() / FLOATS_PER_VERTEX);
 
-	// Ensure neighbors vector has an entry for every vertex
 	if (neighbors.size() != vertex_count)
 	{
 		std::cout << "Resizing neighbors vector to vertex_count.\n";
-		// neighbors.resize(vertex_count); // safer than crashing
 	}
 
-	// Build Laplacian
 	Eigen::SparseMatrix<float> laplacien(vertex_count, vertex_count);
 	std::vector<Eigen::Triplet<float>> tripletList;
 	tripletList.reserve(vertex_count * 6);
@@ -132,7 +125,7 @@ std::vector<GLfloat> ls_mesh::calc_vertices(std::vector<unsigned int> control_po
 	{
 		for (unsigned int i = 0; i < vertex_count; ++i)
 		{
-			tripletList.emplace_back(i, i, 0.0f); // We'll fill diagonal later
+			tripletList.emplace_back(i, i, 0.0f);
 
 			Eigen::Vector3f vi(
 				orig_vertices[FLOATS_PER_VERTEX * i + 0],
@@ -151,29 +144,25 @@ std::vector<GLfloat> ls_mesh::calc_vertices(std::vector<unsigned int> control_po
 					orig_vertices[FLOATS_PER_VERTEX * j + 1],
 					orig_vertices[FLOATS_PER_VERTEX * j + 2]);
 
-				// Compute cotangent weights using 1-ring triangles (i,j,k)
 				float cot_sum = 0.0f;
 				int cot_count = 0;
 
-				// For each common neighbor k shared by i and j (triangles (i,j,k))
 				for (auto k : neighbors[i])
 				{
 					if (k == j || k >= vertex_count)
 						continue;
 					if (std::find(neighbors[j].begin(), neighbors[j].end(), k) == neighbors[j].end())
-						continue; // not a shared face
+						continue;
 
 					Eigen::Vector3f vk(
 						orig_vertices[FLOATS_PER_VERTEX * k + 0],
 						orig_vertices[FLOATS_PER_VERTEX * k + 1],
 						orig_vertices[FLOATS_PER_VERTEX * k + 2]);
 
-					// Angles opposite edge (i,j)
 					Eigen::Vector3f e_ij = vi - vj;
 					Eigen::Vector3f e_ik = vi - vk;
 					Eigen::Vector3f e_jk = vj - vk;
 
-					// Pick the angle opposite to edge (i,j): that’s at vertex k
 					Eigen::Vector3f u = vi - vk;
 					Eigen::Vector3f v = vj - vk;
 
@@ -189,14 +178,13 @@ std::vector<GLfloat> ls_mesh::calc_vertices(std::vector<unsigned int> control_po
 
 				if (cot_count > 0)
 				{
-					float w = 0.5f * cot_sum; // average cotangent weight
+					float w = 0.5f * cot_sum;
 					weight_sum += w;
 
 					tripletList.emplace_back(i, j, -w);
 				}
 			}
 
-			// Diagonal entry
 			tripletList.emplace_back(i, i, weight_sum);
 		}
 	}
@@ -204,7 +192,6 @@ std::vector<GLfloat> ls_mesh::calc_vertices(std::vector<unsigned int> control_po
 	laplacien.setFromTriplets(tripletList.begin(), tripletList.end());
 	laplacien.makeCompressed();
 
-	// Build F matrix
 	tripletList.clear();
 	Eigen::SparseMatrix<float> F_matrix(control_points.size(), vertex_count);
 	tripletList.reserve(control_points.size());
@@ -215,7 +202,6 @@ std::vector<GLfloat> ls_mesh::calc_vertices(std::vector<unsigned int> control_po
 	F_matrix.setFromTriplets(tripletList.begin(), tripletList.end());
 	F_matrix.makeCompressed();
 
-	// Build A = [L; F]
 	Eigen::SparseMatrix<float> A_matrix(laplacien.rows() + F_matrix.rows(), laplacien.cols());
 	tripletList.clear();
 	tripletList.reserve(static_cast<size_t>(laplacien.nonZeros() + F_matrix.nonZeros()));
@@ -231,7 +217,6 @@ std::vector<GLfloat> ls_mesh::calc_vertices(std::vector<unsigned int> control_po
 	A_matrix.setFromTriplets(tripletList.begin(), tripletList.end());
 	A_matrix.makeCompressed();
 
-	// Build b vectors
 	Eigen::VectorXf bx(A_matrix.rows()), by(A_matrix.rows()), bz(A_matrix.rows());
 	bx.setZero();
 	by.setZero();
@@ -250,7 +235,6 @@ std::vector<GLfloat> ls_mesh::calc_vertices(std::vector<unsigned int> control_po
 	Eigen::VectorXf y = lscg.solve(by);
 	Eigen::VectorXf z = lscg.solve(bz);
 
-	// build new vertices vector
 	std::vector<GLfloat> new_vertices;
 	new_vertices.resize(vertex_count * FLOATS_PER_VERTEX);
 	if (error_average)
@@ -263,7 +247,6 @@ std::vector<GLfloat> ls_mesh::calc_vertices(std::vector<unsigned int> control_po
 		new_vertices[i * FLOATS_PER_VERTEX + 1] = y[i];
 		new_vertices[i * FLOATS_PER_VERTEX + 2] = z[i];
 
-		// preserve placeholder layout for the rest (you can adjust to carry over other attributes)
 		for (size_t k = 3; k < FLOATS_PER_VERTEX; ++k)
 			new_vertices[i * FLOATS_PER_VERTEX + k] = 0.0f;
 
@@ -285,7 +268,7 @@ std::vector<GLfloat> ls_mesh::calc_vertices(std::vector<unsigned int> control_po
 std::vector<unsigned int> ls_mesh::random_cp(int control_count) const
 {
 	int vertex_count = orig_vertices.size() / 9;
-	// --- choose control points (unique, well-distributed) ---
+
 	if (control_count <= 1)
 		control_count = 2;
 	if (control_count > static_cast<int>(vertex_count))
@@ -294,7 +277,6 @@ std::vector<unsigned int> ls_mesh::random_cp(int control_count) const
 	std::vector<unsigned int> control_points;
 	control_points.reserve(control_count);
 
-	// deterministic spread + small random jitter to avoid perfect alignment
 	unsigned int step = std::max(1u, vertex_count / static_cast<unsigned int>(control_count));
 	std::mt19937 rng(12345);
 	std::uniform_int_distribution<int> jitter(-static_cast<int>(step / 4), static_cast<int>(step / 4));
@@ -306,12 +288,12 @@ std::vector<unsigned int> ls_mesh::random_cp(int control_count) const
 		control_points.push_back(candidate);
 		idx += step;
 	}
-	// ensure unique (if duplicates exist, fill missing with last indexes)
+
 	std::sort(control_points.begin(), control_points.end());
 	control_points.erase(std::unique(control_points.begin(), control_points.end()), control_points.end());
 	while (static_cast<int>(control_points.size()) < control_count)
 	{
-		// append random unique indices
+
 		for (unsigned int k = 0; k < vertex_count && static_cast<int>(control_points.size()) < control_count; ++k)
 		{
 			if (!std::binary_search(control_points.begin(), control_points.end(), k))
@@ -344,9 +326,7 @@ unsigned int ls_mesh::get_most_difference_index(const std::vector<GLfloat> &vert
 std::vector<unsigned int> ls_mesh::greedy_cp(int control_count, float control_weight,
 											 bool is_uniform) const
 {
-	// --- 1. Initialization and Edge Cases ---
 
-	// Ensure the requested count is valid
 	unsigned int vertex_count = orig_vertices.size() / 9;
 	if (control_count <= 20)
 	{
@@ -357,39 +337,26 @@ std::vector<unsigned int> ls_mesh::greedy_cp(int control_count, float control_we
 		control_count = static_cast<int>(vertex_count);
 	}
 
-	// Start with a small set of initial control points (minimum 2 recommended)
 	std::vector<unsigned int> control_points;
 	control_points = random_cp(10);
 
-	// --- 2. Iterative Greedy Selection ---
-
-	// Loop until we reach the desired number of control points
 	while (static_cast<int>(control_points.size()) < control_count)
 	{
 
-		// a) Calculate the Least Squares approximation with current CPs
-		// Since this is a const function, we can't call a non-const calc_vertices.
-		// Assuming calc_vertices is NOT implicitly const (though you declared it as const).
-		// To be safe, we rely on the internal state (this is a common const/non-const dilemma).
-
-		// Since 'calc_vertices' is declared as 'const', we can call it:
 		std::vector<GLfloat> new_verts = this->calc_vertices(
 			control_points,
-			control_weight, // Use a default control weight (e.g., 10.0f)
-			is_uniform,		// Use uniform weights for initial error calculation
+			control_weight,
+			is_uniform,
 			0);
 
-		// Ensure the calculation produced valid results
 		if (new_verts.empty() || new_verts.size() != orig_vertices.size())
 		{
 			std::cerr << "Error: LS calculation failed or produced wrong size.\n";
 			break;
 		}
 
-		// b) Find the vertex index with the maximum difference (error)
 		unsigned int max_error_index = get_most_difference_index(new_verts);
 
-		// c) Add the max-error vertex as a new control point, if it's not already one
 		bool already_exists = false;
 		for (unsigned int cp : control_points)
 		{
@@ -403,12 +370,10 @@ std::vector<unsigned int> ls_mesh::greedy_cp(int control_count, float control_we
 		if (!already_exists)
 		{
 			control_points.push_back(max_error_index);
-			// printf("New cp added: %d\n", control_points.size());
 		}
 		else
 		{
-			// This can happen if the two highest error points are the existing CPs.
-			// In a simple loop, this results in an infinite loop if not handled.
+
 			std::cout << "Warning: Max error index is already a control point. Stopping greedy search.\n";
 			break;
 		}
@@ -420,13 +385,12 @@ std::vector<unsigned int> ls_mesh::greedy_cp(int control_count, float control_we
 std::vector<unsigned int> ls_mesh::iterative_greedy_cp(int control_count, float control_weight,
 													   bool is_uniform) const
 {
-	// --- 1. Initialization and Edge Cases ---
+
 	const size_t FLOATS_PER_VERTEX = 9;
 	const size_t NUM_POINTS_PER_ITERATION = 10;
 
 	unsigned int vertex_count = orig_vertices.size() / FLOATS_PER_VERTEX;
 
-	// Ensure minimum count is 20 (as requested)
 	if (control_count <= 20)
 	{
 		control_count = 20;
@@ -436,23 +400,17 @@ std::vector<unsigned int> ls_mesh::iterative_greedy_cp(int control_count, float 
 		control_count = static_cast<int>(vertex_count);
 	}
 
-	// Start with 10 random control points
 	std::vector<unsigned int> control_points = random_cp(10);
 
-	// Keep control_points sorted for fast uniqueness checks later
 	std::sort(control_points.begin(), control_points.end());
 
-	// --- 2. Iterative Greedy Selection ---
-
-	// Loop until we reach the desired number of control points
 	while (static_cast<int>(control_points.size()) < control_count)
 	{
 		std::vector<GLfloat> new_verts = this->calc_vertices(
 			control_points,
 			control_weight,
 			is_uniform,
-			0); // Note: Passing 0 to a float& argument is problematic,
-				// fixed by using a placeholder float here.
+			0);
 
 		if (new_verts.empty() || new_verts.size() != orig_vertices.size())
 		{
@@ -460,24 +418,21 @@ std::vector<unsigned int> ls_mesh::iterative_greedy_cp(int control_count, float 
 			break;
 		}
 
-		// b) Map all vertices' errors: {error, index}
 		std::vector<std::pair<float, unsigned int>> error_map;
 		error_map.reserve(vertex_count);
 		for (unsigned int i = 0; i < vertex_count; ++i)
 		{
-			// Note: We use the *original* vertices for comparison, which is correct.
+
 			float error = glm_vec3_distance(&(new_verts[i * FLOATS_PER_VERTEX]), &(orig_vertices[i * FLOATS_PER_VERTEX]));
 			error_map.emplace_back(error, i);
 		}
 
-		// c) Sort by error (descending) to find the vertices with the largest displacement
 		std::sort(error_map.begin(), error_map.end(),
 				  [](const auto &a, const auto &b)
 				  {
 					  return a.first > b.first;
 				  });
 
-		// d) Select and add the top unique candidates
 		size_t points_added_this_iter = 0;
 		size_t vertices_checked = 0;
 		bool added_any = false;
@@ -487,11 +442,9 @@ std::vector<unsigned int> ls_mesh::iterative_greedy_cp(int control_count, float 
 			unsigned int potential_cp = pair.second;
 			vertices_checked++;
 
-			// Stop if we hit the limit for this iteration OR the overall final limit
 			if (points_added_this_iter >= NUM_POINTS_PER_ITERATION || static_cast<int>(control_points.size()) >= control_count)
 				break;
 
-			// Check if this point is already a control point (requires control_points to be sorted)
 			if (!std::binary_search(control_points.begin(), control_points.end(), potential_cp))
 			{
 				control_points.push_back(potential_cp);
@@ -500,17 +453,13 @@ std::vector<unsigned int> ls_mesh::iterative_greedy_cp(int control_count, float 
 			}
 		}
 
-		// Re-sort control points after adding new ones to maintain binary_search compatibility
 		std::sort(control_points.begin(), control_points.end());
 
-		// Check for stagnation
 		if (!added_any && vertices_checked == vertex_count)
 		{
 			std::cout << "Warning: Checked all vertices but could not find new unique control points. Stopping greedy search.\n";
 			break;
 		}
-
-		// printf("New CPs added this iteration: %zu. Total control points: %zu\n", points_added_this_iter, control_points.size());
 	}
 
 	return control_points;
